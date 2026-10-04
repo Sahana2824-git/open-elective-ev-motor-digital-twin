@@ -127,35 +127,27 @@ def generate_urban_stop_and_go(total_time: float = 100.0, dt: float = 0.1) -> pd
     })
 
 
-def generate_highway_stress(total_time: float = 150.0, dt: float = 0.1) -> pd.DataFrame:
+def generate_highway_stress(total_time: float = 200.0, dt: float = 0.1) -> pd.DataFrame:
     """
-    Simulates aggressive high-speed highway cruising with steep incline grade.
-    Designed specifically to push motor thermal limit past WARNING and CRITICAL thresholds.
+    Simulates aggressive high-speed highway driving with sustained uphill mountain towing.
+    Designed specifically to push motor thermal limit past WARNING (85°C) and trigger derating/CRITICAL protection.
     """
     times = np.arange(0.0, total_time + dt, dt)
     speeds_kmh = np.zeros_like(times)
     grades_pct = np.zeros_like(times)
 
     for i, t in enumerate(times):
-        if t < 5.0:
-            speeds_kmh[i] = (t / 5.0) * 30.0
-        elif t < 18.0:
-            alpha = (t - 5.0) / 13.0
-            speeds_kmh[i] = 30.0 + alpha * 90.0  # Reach 120 km/h
-        elif t < 90.0:
-            # Sustained high speed cruise with uphill climb (4.5% grade)
-            speeds_kmh[i] = 125.0 + 3.0 * np.sin(0.1 * t)
-            if t > 30.0 and t < 85.0:
-                grades_pct[i] = 4.5  # 4.5% uphill grade adds major tractive load
-        elif t < 120.0:
-            # Full throttle push to 140 km/h
-            alpha = (t - 90.0) / 30.0
-            speeds_kmh[i] = 125.0 + alpha * 20.0
-            grades_pct[i] = 3.0
+        # Repeated heavy acceleration bursts (60 to 145 km/h) up a steep 11% mountain incline
+        cycle_phase = (t % 35.0)
+        if cycle_phase < 15.0:
+            speeds_kmh[i] = 60.0 + (cycle_phase / 15.0) * 85.0
+            grades_pct[i] = 11.0
+        elif cycle_phase < 28.0:
+            speeds_kmh[i] = 145.0
+            grades_pct[i] = 11.0
         else:
-            # Decel to zero
-            alpha = (t - 120.0) / 30.0
-            speeds_kmh[i] = max(0.0, 145.0 * (1.0 - alpha))
+            speeds_kmh[i] = 145.0 - ((cycle_phase - 28.0) / 7.0) * 85.0
+            grades_pct[i] = 4.0
 
     speeds_ms = speeds_kmh / 3.6
     accel_ms2 = np.gradient(speeds_ms, dt)
