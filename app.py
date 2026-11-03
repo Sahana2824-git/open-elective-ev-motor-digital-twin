@@ -98,13 +98,15 @@ st.markdown("""
         color: #FCA5A5;
         font-weight: 700;
         font-size: 1.05rem;
-        animation: pulse 1.5s infinite;
+        box-shadow: 0 0 12px rgba(239, 68, 68, 0.35);
         margin-bottom: 15px;
     }
-    @keyframes pulse {
-        0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
-        70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+    [data-testid="stMetric"] {
+        background: rgba(30, 41, 59, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 10px;
+        padding: 10px 14px;
+        min-height: 95px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -249,7 +251,13 @@ def build_sidebar():
     )
 
 
-def create_plotly_dashboard(df: pd.DataFrame, thermal_params: ThermalParameters, motor_params: MotorParameters):
+def create_plotly_dashboard(
+    df: pd.DataFrame,
+    thermal_params: ThermalParameters,
+    motor_params: MotorParameters,
+    fixed_x_max: float = None,
+    fixed_y_ranges: bool = False,
+):
     """Generates comprehensive synchronized 4-panel engineering plot."""
     fig = make_subplots(
         rows=4,
@@ -377,50 +385,77 @@ def create_plotly_dashboard(df: pd.DataFrame, thermal_params: ThermalParameters,
     )
 
     fig.update_xaxes(title_text="Time [s]", row=4, col=1)
+
+    if fixed_x_max is not None and fixed_x_max > 0:
+        fig.update_xaxes(range=[0, fixed_x_max], autorange=False)
+
+    if fixed_y_ranges:
+        max_v = max(100.0, float(df["v_kmh"].max()) * 1.15) if len(df) > 0 else 120.0
+        fig.update_yaxes(range=[0, max_v], autorange=False, row=1, col=1)
+        max_tau = float(motor_params.I_max * motor_params.Kt * 1.05)
+        min_tau = -float(motor_params.I_max * 0.7 * motor_params.Kt * 1.05)
+        fig.update_yaxes(range=[min_tau, max_tau], autorange=False, row=2, col=1)
+        fig.update_yaxes(range=[-motor_params.I_max * 0.8, motor_params.I_max * 1.1], autorange=False, row=3, col=1)
+        fig.update_yaxes(range=[thermal_params.T_ambient - 5.0, max(thermal_params.T_critical + 25.0, 110.0)], autorange=False, row=4, col=1)
+
     fig.update_layout(
         height=850,
         margin=dict(l=50, r=30, t=40, b=40),
         hovermode="x unified",
         template="plotly_dark",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        uirevision="twin_stream_fixed",
+        transition={"duration": 0},
     )
     return fig
 
 
-def render_alert_banner(current_temp: float, alert_level: str, t_warn: float, t_crit: float, derate: float):
-    """Renders contextual alert banner based on real-time temperature."""
+def plot_chart(container_or_st, fig, key=None):
+    """Render plotly chart without deprecation warning and with responsive full-width."""
+    try:
+        if key:
+            return container_or_st.plotly_chart(fig, width="stretch", key=key)
+        return container_or_st.plotly_chart(fig, width="stretch")
+    except TypeError:
+        if key:
+            return container_or_st.plotly_chart(fig, use_container_width=True, key=key)
+        return container_or_st.plotly_chart(fig, use_container_width=True)
+
+
+def get_alert_banner_html(current_temp: float, alert_level: str, t_warn: float, t_crit: float, derate: float) -> str:
+    """Returns contextual alert banner HTML based on real-time temperature."""
     if alert_level == "CRITICAL":
-        st.markdown(
-            f"""
-            <div class="alert-critical">
-                🚨 <b>CRITICAL OVERHEAT ALARM!</b> Motor winding temperature reached <b>{current_temp:.1f}°C</b>, 
-                exceeding the critical safe threshold of <b>{t_crit:.1f}°C</b>! 
-                Thermal Derating Active: Motor current restricted to <b>{derate*100:.0f}%</b> to prevent insulation breakdown.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        return f"""
+        <div class="alert-critical">
+            🚨 <b>CRITICAL OVERHEAT ALARM!</b> Motor winding temperature reached <b>{current_temp:.1f}°C</b>, 
+            exceeding the critical safe threshold of <b>{t_crit:.1f}°C</b>! 
+            Thermal Derating Active: Motor current restricted to <b>{derate*100:.0f}%</b> to prevent insulation breakdown.
+        </div>
+        """
     elif alert_level == "WARNING":
-        st.markdown(
-            f"""
-            <div class="alert-warning">
-                ⚠️ <b>TEMPERATURE WARNING:</b> Motor winding temperature is at <b>{current_temp:.1f}°C</b> 
-                (exceeded warning limit of <b>{t_warn:.1f}°C</b>). 
-                Continuous I²R Joule heating is outpacing thermal dissipation. Derating factor: <b>{derate*100:.0f}%</b>.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        return f"""
+        <div class="alert-warning">
+            ⚠️ <b>TEMPERATURE WARNING:</b> Motor winding temperature is at <b>{current_temp:.1f}°C</b> 
+            (exceeded warning limit of <b>{t_warn:.1f}°C</b>). 
+            Continuous I²R Joule heating is outpacing thermal dissipation. Derating factor: <b>{derate*100:.0f}%</b>.
+        </div>
+        """
     else:
-        st.markdown(
-            f"""
-            <div class="alert-normal">
-                ✅ <b>THERMAL STATE NORMAL:</b> Motor temperature is safe at <b>{current_temp:.1f}°C</b> 
-                (Safe Operating Zone &lt; {t_warn:.1f}°C). Full 100% torque available.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        return f"""
+        <div class="alert-normal">
+            ✅ <b>THERMAL STATE NORMAL:</b> Motor temperature is safe at <b>{current_temp:.1f}°C</b> 
+            (Safe Operating Zone &lt; {t_warn:.1f}°C). Full 100% torque available.
+        </div>
+        """
+
+
+def render_alert_banner(current_temp: float, alert_level: str, t_warn: float, t_crit: float, derate: float, target=None):
+    """Renders contextual alert banner based on real-time temperature."""
+    html = get_alert_banner_html(current_temp, alert_level, t_warn, t_crit, derate)
+    if target is not None:
+        target.markdown(html, unsafe_allow_html=True)
+    else:
+        st.markdown(html, unsafe_allow_html=True)
 
 
 def main():
@@ -491,7 +526,7 @@ def main():
 
         # Plotly synchronized dashboard
         fig = create_plotly_dashboard(df_full, thermal_params, motor_params)
-        st.plotly_chart(fig, use_container_width=True)
+        plot_chart(st, fig, key="tab1_plotly_dashboard")
 
         # Export telemetry data
         st.markdown("#### 📥 Export Simulation Data")
@@ -515,12 +550,58 @@ def main():
         start_btn = col_ctl1.button("▶️ Start Live Stream", key="live_start_btn", type="primary")
         sim_speed = col_ctl2.select_slider("Playback Speed", options=[1, 2, 5, 10, 20], value=5)
 
-        # Placeholders for live components
+        total_duration = float(cycle_df["time"].iloc[-1])
+        total_steps = len(cycle_df)
+
+        # Progress bar placeholder
+        progress_placeholder = st.empty()
+
+        # Alert banner placeholder
         alert_placeholder = st.empty()
-        kpi_placeholder = st.empty()
+
+        # Pre-create 5 metric columns to prevent DOM recreation & height jumping
+        col1, col2, col3, col4, col5 = st.columns(5)
+        m1 = col1.empty()
+        m2 = col2.empty()
+        m3 = col3.empty()
+        m4 = col4.empty()
+        m5 = col5.empty()
+
+        status_placeholder = st.empty()
         chart_placeholder = st.empty()
 
-        if start_btn:
+        if not start_btn:
+            render_alert_banner(
+                thermal_params.T_ambient,
+                "NORMAL",
+                thermal_params.T_warning,
+                thermal_params.T_critical,
+                1.0,
+                target=alert_placeholder,
+            )
+            m1.metric("Live Speed", "0.0 km/h")
+            m2.metric("Motor Torque (τ = Kt·I)", "0.0 N·m")
+            m3.metric("Current (I)", "0.0 A")
+            m4.metric("Winding Temp", f"{thermal_params.T_ambient:.1f} °C")
+            m5.metric("Motor RPM", "0 RPM")
+            status_placeholder.info("Click **'▶️ Start Live Stream'** above to run the animated digital twin simulation.")
+
+            # Initial baseline chart with full time range fixed (prevents layout collapse & flickering)
+            init_df = cycle_df.iloc[[0]].copy()
+            init_df["v_kmh"] = 0.0
+            init_df["torque_nm"] = 0.0
+            init_df["current_a"] = 0.0
+            init_df["t_motor_c"] = thermal_params.T_ambient
+            fig_init = create_plotly_dashboard(
+                init_df,
+                thermal_params,
+                motor_params,
+                fixed_x_max=total_duration,
+                fixed_y_ranges=True,
+            )
+            plot_chart(chart_placeholder, fig_init)
+        else:
+            status_placeholder.empty()
             stream_twin = EVMotorTwin(
                 motor_params=motor_params,
                 thermal_params=thermal_params,
@@ -531,54 +612,73 @@ def main():
             sim_stream = MotorSimulator(stream_twin)
 
             history = []
-            dt_sleep = max(0.01, (cycle_df["time"].iloc[1] - cycle_df["time"].iloc[0]) / sim_speed)
+            dt_sim = cycle_df["time"].iloc[1] - cycle_df["time"].iloc[0] if total_steps > 1 else 0.1
+            dt_sleep = max(0.005, dt_sim / sim_speed)
 
-            # Sampling decimation to keep browser smooth
+            # Throttle chart updates to eliminate browser blinking and layout thrashing
+            last_chart_time = 0.0
+            last_ui_time = 0.0
+            CHART_REFRESH_SEC = 0.22  # ~4.5 FPS: perfectly smooth for Plotly without blinking
+            UI_REFRESH_SEC = 0.06     # ~16 updates/sec for smooth number flow
+
             step_count = 0
             for step_data in sim_stream.stream_step(cycle_df, initial_temp=thermal_params.T_ambient):
                 history.append(step_data)
                 step_count += 1
 
-                # Update UI every few steps
-                if step_count % max(1, int(sim_speed / 2)) == 0 or step_count == len(cycle_df):
-                    df_live = pd.DataFrame(history)
+                now = time.time()
+                is_last_step = (step_count == total_steps)
+
+                # 1. Update Metrics smoothly in-place (no DOM reconstruction, no height collapse)
+                if (now - last_ui_time >= UI_REFRESH_SEC) or is_last_step:
+                    last_ui_time = now
                     curr_step = step_data
 
-                    # 1. Update Alert Banner
-                    with alert_placeholder.container():
-                        render_alert_banner(
-                            curr_step["t_motor_c"],
-                            curr_step["alert_level"],
-                            thermal_params.T_warning,
-                            thermal_params.T_critical,
-                            curr_step["derate_factor"],
-                        )
+                    render_alert_banner(
+                        curr_step["t_motor_c"],
+                        curr_step["alert_level"],
+                        thermal_params.T_warning,
+                        thermal_params.T_critical,
+                        curr_step["derate_factor"],
+                        target=alert_placeholder,
+                    )
 
-                    # 2. Update KPI row
-                    with kpi_placeholder.container():
-                        k1, k2, k3, k4, k5 = st.columns(5)
-                        k1.metric("Live Speed", f"{curr_step['v_kmh']:.1f} km/h")
-                        k2.metric("Motor Torque (τ = Kt·I)", f"{curr_step['torque_nm']:.1f} N·m")
-                        k3.metric("Current (I)", f"{curr_step['current_a']:.1f} A")
-                        k4.metric("Winding Temp", f"{curr_step['t_motor_c']:.1f} °C", delta=f"{curr_step['p_cu_kw']:.2f} kW heat", delta_color="inverse")
-                        k5.metric("Motor RPM", f"{curr_step['rpm']:.0f} RPM")
+                    m1.metric("Live Speed", f"{curr_step['v_kmh']:.1f} km/h")
+                    m2.metric("Motor Torque (τ = Kt·I)", f"{curr_step['torque_nm']:.1f} N·m")
+                    m3.metric("Current (I)", f"{curr_step['current_a']:.1f} A")
+                    m4.metric(
+                        "Winding Temp",
+                        f"{curr_step['t_motor_c']:.1f} °C",
+                        delta=f"{curr_step['p_cu_kw']:.2f} kW heat",
+                        delta_color="inverse",
+                    )
+                    m5.metric("Motor RPM", f"{curr_step['rpm']:.0f} RPM")
+                    progress_placeholder.progress(min(1.0, step_count / total_steps))
 
-                    # 3. Update Plots
-                    fig_live = create_plotly_dashboard(df_live, thermal_params, motor_params)
-                    chart_placeholder.plotly_chart(fig_live, use_container_width=True)
+                # 2. Update Plotly Chart with fixed axis and uirevision (ZERO blinking!)
+                if (now - last_chart_time >= CHART_REFRESH_SEC) or is_last_step:
+                    last_chart_time = now
+                    df_live = pd.DataFrame(history)
+                    fig_live = create_plotly_dashboard(
+                        df_live,
+                        thermal_params,
+                        motor_params,
+                        fixed_x_max=total_duration,
+                        fixed_y_ranges=True,
+                    )
+                    plot_chart(chart_placeholder, fig_live)
 
-                    time.sleep(dt_sleep)
+                time.sleep(dt_sleep)
 
-            st.success("🏁 Drive Cycle Stream Completed!")
-        else:
-            st.info("Click **'▶️ Start Live Stream'** above to run the animated digital twin simulation.")
+            progress_placeholder.empty()
+            status_placeholder.success("🏁 Drive Cycle Stream Completed! Full mission profile displayed.")
 
     # ----------------------------------------------------
     # TAB 3: Thermal & Loss Model Breakdown
     # ----------------------------------------------------
     with tab3:
         st.markdown("### 🔬 In-Depth Loss & Thermal Dissipation Physics")
-        st.markdown("""
+        st.markdown(r"""
         The digital twin models continuous electromechanical losses and heat transfer via:
         1. **Joule Loss (Copper)**: $P_{cu} = I^2 \cdot R(T)$ where $R(T) = R_0 \cdot [1 + \\alpha_{cu}(T - T_{ref})]$
         2. **Core/Iron Loss**: $P_{core} = k_{iron} \cdot \\omega^{1.5}$
@@ -618,7 +718,7 @@ def main():
             height=450,
             hovermode="x unified",
         )
-        st.plotly_chart(fig_loss, use_container_width=True)
+        plot_chart(st, fig_loss, key="tab3_fig_loss")
 
         col_l1, col_l2 = st.columns(2)
         with col_l1:
@@ -636,7 +736,7 @@ def main():
                 template="plotly_dark",
                 height=300,
             )
-            st.plotly_chart(fig_r, use_container_width=True)
+            plot_chart(st, fig_r, key="tab3_fig_r")
 
         with col_l2:
             st.markdown("#### 🛡️ Thermal Derating Protection Factor")
@@ -655,7 +755,7 @@ def main():
                 template="plotly_dark",
                 height=300,
             )
-            st.plotly_chart(fig_d, use_container_width=True)
+            plot_chart(st, fig_d, key="tab3_fig_d")
 
 
 if __name__ == "__main__":
